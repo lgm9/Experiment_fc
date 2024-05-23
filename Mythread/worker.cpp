@@ -12,12 +12,14 @@
 #include "rocksdb/db.h"
 #define BUF_SIZE 128
 
-Worker::Worker(int n_ID, int fd, pthread_mutex_t* inlock, pthread_cond_t* cond, rocksdb::DB* indb) {
+Worker::Worker(int n_ID, int fd, pthread_mutex_t* inlock, pthread_cond_t* cond, rocksdb::DB* indb, std::mutex* inmut, std::queue<Payload *>* inQ) {
     ID = n_ID;
     sockfd = fd;
     lock = inlock;
     cv = cond;
     db = indb;
+    Q_lock = inmut;
+    Q = inQ;
 }
 
 inline int Worker::parselen() {
@@ -41,46 +43,50 @@ inline int Worker::parselen() {
 
 int Worker::work() {
     while(1) {
-        if(Q.empty()) {
+        if(Q_lock->try_lock()) {
+            if(!Q -> empty()) {
+                pl = Q -> front();
+                Q -> pop();
+                Q_lock -> unlock();
+                if(parselen()) {
+                    rocksdb::Status status = db->Put(rocksdb::WriteOptions(), key, value);
+                    assert(status.ok());
+                    buf[0] = 'O';
+                    buf[1] = 'K';
+                    buf[2] = 0;
+                    sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&(pl -> addr), sizeof(pl -> addr));
+                }
+                else{
+                    std::string ret;
+                    rocksdb::Status status = db->Get(rocksdb::ReadOptions(), key, &ret);
+                    if(status.IsNotFound()) {
+                        strcpy(buf, "NO SUCH KEY");
+                        buf[11] = 0;
+                    }
+                    else if(status.ok()) {
+                        strcpy(buf, ret.c_str());
+                    }
+                    else {
+                        strcpy(buf, "ERROR IN DB");
+                        buf[11] = 0;
+                    }
+                    sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&(pl -> addr), sizeof(pl -> addr));
+                }
+                delete(pl);
+            }
+            else {
+                Q_lock -> unlock();
+            }
+        }
+        /*
+        else {
             pthread_mutex_lock(lock);
             pthread_cond_wait(cv, lock);
             pthread_mutex_unlock(lock);
         }
-        while(!Q.empty()) {
-            pl = Q.front();
-            Q.pop();
-            if(parselen()) {
-                rocksdb::Status status = db->Put(rocksdb::WriteOptions(), key, value);
-                assert(status.ok());
-                buf[0] = 'O';
-                buf[1] = 'K';
-                buf[2] = 0;
-                sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&(pl -> addr), sizeof(pl -> addr));
-            }
-            else{
-                std::string ret;
-                rocksdb::Status status = db->Get(rocksdb::ReadOptions(), key, &ret);
-                if(status.IsNotFound()) {
-                    strcpy(buf, "NO SUCH KEY");
-                    buf[11] = 0;
-                }
-                else if(status.ok()) {
-                    strcpy(buf, ret.c_str());
-                }
-                else {
-                    strcpy(buf, "ERROR IN DB");
-                    buf[11] = 0;
-                }
-                sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&(pl -> addr), sizeof(pl -> addr));
-            }
-            delete(pl);
-        }
+        */
     }
     return 0;
-}
-
-void Worker::push(Payload *pl) {
-    Q.push(pl);
 }
 
 int Worker::init() {

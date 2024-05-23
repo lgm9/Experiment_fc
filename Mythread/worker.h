@@ -11,16 +11,16 @@ class Worker {
     char* buf, *key, *value;
     Payload* pl;
     pthread_t w_thread;
-    std::queue<Payload *> Q;
+    std::queue<Payload *> *Q;
     rocksdb::DB* db;
+    std::mutex* Q_lock;
     int i;
     inline int parselen();
 
     public:
         pthread_mutex_t *lock;
         pthread_cond_t *cv;
-        Worker(int, int, pthread_mutex_t*, pthread_cond_t*, rocksdb::DB*);
-        void push(Payload *);
+        Worker(int, int, pthread_mutex_t*, pthread_cond_t*, rocksdb::DB*, std::mutex*, std::queue<Payload *>*);
         int work();
         int init();
         ~Worker() {
